@@ -1,10 +1,15 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from dataclass_initializer import DataclassInitializer
 from omegaconf import DictConfig, OmegaConf
 
-from parameter_optimizer import OptimizationResult, OptimizerSettings, ParameterOptimizer, TrialReporter
+from parameter_optimizer import (
+    DataclassBuilder,
+    OptimizationResult,
+    OptimizerSettings,
+    ParameterOptimizer,
+    TrialReporter,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -57,14 +62,14 @@ def main() -> None:
     assert isinstance(settings_config, DictConfig)
 
     optimizer: ParameterOptimizer[QuadraticConfig] = ParameterOptimizer(
-        config_class=QuadraticConfig,
+        config_builder=DataclassBuilder(QuadraticConfig),
         base_config=base_config.model,
         search_space=search_space.model,
-        settings=DataclassInitializer.build(OptimizerSettings, settings_config),
+        settings=OptimizerSettings.from_config(settings_config),
     )
     result: OptimizationResult[QuadraticConfig] = optimizer.optimize(evaluate)
-    print(f"best value: {result.best_value:.4f}")
-    print(OmegaConf.to_yaml(result.resolved_config))
+    print(f"best value: {result.best.value:.4f}")
+    print(OmegaConf.to_yaml(result.best.resolved_config))
 
 
 if __name__ == "__main__":

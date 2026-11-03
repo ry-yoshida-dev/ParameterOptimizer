@@ -7,7 +7,7 @@ from omegaconf import Container, DictConfig, OmegaConf, open_dict, read_write
 from optuna import Trial
 from optuna.distributions import BaseDistribution
 
-from ..parameter import CategoricalSpec, ParameterDistribution, ParameterSpec, ParameterValue
+from ..parameter import ParameterSpec, ParameterValue, parameter_spec_registry
 
 
 class SearchSpace:
@@ -25,7 +25,6 @@ class SearchSpace:
         If ``specs`` is empty.
     """
 
-    _DISTRIBUTION_KEY: str = "distribution"
     _MAX_PROBE_COMBINATIONS: int = 1024
 
     def __init__(self, specs: Mapping[str, ParameterSpec]) -> None:
@@ -59,28 +58,40 @@ class SearchSpace:
         return cls(specs)
 
     @property
-    def categorical_candidates(self) -> dict[str, list[ParameterValue]]:
+    def grid_candidates(self) -> dict[str, list[ParameterValue]]:
         """
-        Candidates of the parameters chosen among listed values, which form the grid of a grid search.
+        Values of the parameters that can be enumerated, which form the grid of a grid search.
 
         Returns
         -------
         dict[str, list[ParameterValue]]
-            Candidates keyed by parameter path.
+            Values keyed by parameter path.
         """
-        return {path: list(spec.candidates) for path, spec in self._specs.items() if isinstance(spec, CategoricalSpec)}
+        return {path: values for path, spec in self._specs.items() if (values := spec.grid_values) is not None}
 
     @property
-    def numeric_paths(self) -> list[str]:
+    def non_enumerable_paths(self) -> list[str]:
         """
-        Paths of the parameters chosen within a range.
+        Paths of the parameters that a grid search cannot try exhaustively.
 
         Returns
         -------
         list[str]
-            Parameter paths using any distribution other than ``categorical``.
+            Parameter paths without grid values.
         """
-        return [path for path, spec in self._specs.items() if not isinstance(spec, CategoricalSpec)]
+        return [path for path, spec in self._specs.items() if spec.grid_values is None]
+
+    @property
+    def non_numeric_paths(self) -> list[str]:
+        """
+        Paths of the parameters whose values are not ordered numbers.
+
+        Returns
+        -------
+        list[str]
+            Parameter paths such as those using the ``categorical`` distribution.
+        """
+        return [path for path, spec in self._specs.items() if not spec.is_numeric]
 
     @property
     def optuna_distributions(self) -> dict[str, BaseDistribution]:
@@ -204,16 +215,15 @@ class SearchSpace:
             location: str = path or "<root>"
             raise ValueError(f"{location}: Expected a mapping of parameters to definitions. got {node}")
         mapping: dict[str, object] = {str(key): value for key, value in cast("dict[object, object]", node).items()}
-        if isinstance(mapping.get(cls._DISTRIBUTION_KEY), str):
+        if isinstance(mapping.get(parameter_spec_registry.key), str):
             specs[path] = cls._build_spec(mapping, path)
             return
         for key, child in mapping.items():
             cls._collect_specs(child, f"{path}.{key}" if path else key, specs)
 
-    @classmethod
-    def _build_spec(cls, definition: dict[str, object], path: str) -> ParameterSpec:
-        fields: dict[str, object] = dict(definition)
+    @staticmethod
+    def _build_spec(definition: dict[str, object], path: str) -> ParameterSpec:
         try:
-            return ParameterDistribution(fields.pop(cls._DISTRIBUTION_KEY)).build_spec(fields)
+            return parameter_spec_registry.build(definition)
         except (TypeError, ValueError) as error:
             raise ValueError(f"{path}: {error}") from error

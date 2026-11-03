@@ -7,18 +7,31 @@ from omegaconf import DictConfig, OmegaConf
 from optuna import Study, TrialPruned
 from optuna.distributions import BaseDistribution, FloatDistribution, IntDistribution
 from optuna.pruners import BasePruner, HyperbandPruner, MedianPruner, NopPruner, SuccessiveHalvingPruner
-from optuna.trial import TrialState
+from optuna.storages import InMemoryStorage
+from optuna.trial import FrozenTrial, TrialState
 from sample.mode import SampleMode
 from sample.model_config import SampleModelConfig
 from sample.range_config import SampleRangeConfig
 
 from parameter_optimizer import (
+    CmaEsSearch,
+    DataclassBuilder,
     Direction,
+    GaussianProcessSearch,
+    GeneticSearch,
+    GridSearch,
+    HyperbandPruning,
+    MedianPruning,
+    NoPruning,
     OptimizationResult,
     OptimizerSettings,
     ParameterOptimizer,
     PruningMethod,
+    QuasiMonteCarloSearch,
+    RandomSearch,
     SearchMethod,
+    SuccessiveHalvingPruning,
+    TpeSearch,
     TrialReporter,
 )
 
@@ -38,7 +51,7 @@ def _optimizer(
     settings: OptimizerSettings,
 ) -> ParameterOptimizer[SampleModelConfig]:
     return ParameterOptimizer(
-        config_class=SampleModelConfig,
+        config_builder=DataclassBuilder(SampleModelConfig),
         base_config=_base_config(),
         search_space=_config(search_space),
         settings=settings,
@@ -47,8 +60,8 @@ def _optimizer(
 
 def _sampled_settings(n_trials: int = 1, seed: int | None = None) -> OptimizerSettings:
     return OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.TPE,
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
         n_trials=n_trials,
         seed=seed,
     )
@@ -73,20 +86,20 @@ def test_grid_tries_every_combination_and_stops_by_itself() -> None:
                 "momentum": {"distribution": "categorical", "candidates": [None, 0.9]},
             },
         },
-        OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.GRID, seed=0),
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch(), seed=0),
     ).optimize(objective)
 
     assert len(seen) == 12
     assert len(set(seen)) == 12
-    assert result.best_config.solver.learning_rate == 0.3
-    assert result.best_value == 0.0
+    assert result.best.config.solver.learning_rate == 0.3
+    assert result.best.value == 0.0
 
 
 def test_grid_rejects_numeric_parameter_at_construction() -> None:
     with pytest.raises(ValueError, match="grid requires categorical"):
         _optimizer(
             {"depth": {"distribution": "int", "low": 1, "high": 3}},
-            OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.GRID),
+            OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()),
         )
 
 
@@ -96,9 +109,9 @@ def test_sampled_search_finds_optimum_and_keeps_untuned_values() -> None:
         _sampled_settings(n_trials=60, seed=0),
     ).optimize(_distance_to_target)
 
-    assert result.best_config.solver.learning_rate == pytest.approx(0.3, abs=0.05)
-    assert result.best_config.solver.momentum == 0.9
-    assert result.best_config.name == "base"
+    assert result.best.config.solver.learning_rate == pytest.approx(0.3, abs=0.05)
+    assert result.best.config.solver.momentum == 0.9
+    assert result.best.config.name == "base"
 
 
 def test_maximize_prefers_larger_value() -> None:
@@ -107,9 +120,9 @@ def test_maximize_prefers_larger_value() -> None:
 
     result: OptimizationResult[SampleModelConfig] = _optimizer(
         {"depth": {"distribution": "categorical", "candidates": [1, 2, 3]}},
-        OptimizerSettings(direction=Direction.MAXIMIZE, search_method=SearchMethod.GRID),
+        OptimizerSettings(directions=[Direction.MAXIMIZE], search_method=GridSearch()),
     ).optimize(objective)
-    assert result.best_config.depth == 3
+    assert result.best.config.depth == 3
 
 
 def test_same_seed_reproduces_trials() -> None:
@@ -146,13 +159,13 @@ def test_resolved_config_is_a_normal_configuration() -> None:
         _sampled_settings(),
     ).optimize(_distance_to_target)
 
-    assert OmegaConf.to_container(result.resolved_config) == {
+    assert OmegaConf.to_container(result.best.resolved_config) == {
         "name": "base",
         "solver": {"learning_rate": 0.5, "momentum": None},
         "mode": "slow",
     }
-    assert result.best_config.mode is SampleMode.SLOW
-    assert result.best_parameters == {"mode": "slow", "solver.momentum": None}
+    assert result.best.config.mode is SampleMode.SLOW
+    assert result.best.parameters == {"mode": "slow", "solver.momentum": None}
 
 
 @pytest.mark.parametrize(
@@ -194,11 +207,11 @@ def test_caught_exception_fails_only_the_trial() -> None:
 
     result: OptimizationResult[SampleModelConfig] = _optimizer(
         {"depth": {"distribution": "categorical", "candidates": [1, 2]}},
-        OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.GRID),
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()),
     ).optimize(objective, caught_exceptions=(ArithmeticError,))
 
     assert [trial.state for trial in result.study.trials].count(TrialState.FAIL) == 1
-    assert result.best_config.depth == 2
+    assert result.best.config.depth == 2
 
 
 def test_no_completed_trial_raises() -> None:
@@ -215,7 +228,7 @@ def test_no_completed_trial_raises() -> None:
 
 @pytest.mark.parametrize(
     "pruning_method",
-    [PruningMethod.MEDIAN, PruningMethod.SUCCESSIVE_HALVING, PruningMethod.HYPERBAND],
+    [MedianPruning(), SuccessiveHalvingPruning(), HyperbandPruning()],
 )
 def test_reporter_lets_pruning_method_stop_bad_trials(pruning_method: PruningMethod) -> None:
     def objective(config: SampleModelConfig, reporter: TrialReporter) -> float:
@@ -226,8 +239,8 @@ def test_reporter_lets_pruning_method_stop_bad_trials(pruning_method: PruningMet
     result: OptimizationResult[SampleModelConfig] = _optimizer(
         {"depth": {"distribution": "int", "low": 1, "high": 100}},
         OptimizerSettings(
-            direction=Direction.MINIMIZE,
-            search_method=SearchMethod.TPE,
+            directions=[Direction.MINIMIZE],
+            search_method=TpeSearch(),
             pruning_method=pruning_method,
             n_trials=40,
             seed=0,
@@ -239,8 +252,8 @@ def test_reporter_lets_pruning_method_stop_bad_trials(pruning_method: PruningMet
 
 def _pruning_settings(pruning_method: PruningMethod) -> OptimizerSettings:
     return OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.TPE,
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
         pruning_method=pruning_method,
         n_trials=2,
     )
@@ -249,9 +262,9 @@ def _pruning_settings(pruning_method: PruningMethod) -> OptimizerSettings:
 def test_warns_when_pruning_has_nothing_to_act_on() -> None:
     optimizer: ParameterOptimizer[SampleModelConfig] = _optimizer(
         {"depth": {"distribution": "int", "low": 1, "high": 3}},
-        _pruning_settings(PruningMethod.MEDIAN),
+        _pruning_settings(MedianPruning()),
     )
-    with pytest.warns(UserWarning, match="pruning_method median has no effect"):
+    with pytest.warns(UserWarning, match="pruning_method MedianPruning has no effect"):
         optimizer.optimize(_distance_to_target)
 
 
@@ -262,18 +275,18 @@ def test_does_not_warn_when_pruning_is_usable_or_disabled() -> None:
         return 1.0
 
     search_space: dict[str, object] = {"depth": {"distribution": "int", "low": 1, "high": 3}}
-    _optimizer(search_space, _pruning_settings(PruningMethod.MEDIAN)).optimize(reporting_objective)
-    _optimizer(search_space, _pruning_settings(PruningMethod.NONE)).optimize(_distance_to_target)
+    _optimizer(search_space, _pruning_settings(MedianPruning())).optimize(reporting_objective)
+    _optimizer(search_space, _pruning_settings(NoPruning())).optimize(_distance_to_target)
 
 
 def test_storage_resumes_existing_study(tmp_path: Path) -> None:
     settings: OptimizerSettings = OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.TPE,
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
         n_trials=3,
         seed=0,
         study_name="resume",
-        storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
     )
     search_space: dict[str, object] = {"solver": {"learning_rate": {"distribution": "float", "low": 0.0, "high": 1.0}}}
     _optimizer(search_space, settings).optimize(_distance_to_target)
@@ -281,17 +294,17 @@ def test_storage_resumes_existing_study(tmp_path: Path) -> None:
     assert len(result.study.trials) == 6
 
 
-@pytest.mark.parametrize("search_method", [SearchMethod.RANDOM, SearchMethod.TPE, SearchMethod.QUASI_MONTE_CARLO])
+@pytest.mark.parametrize("search_method", [RandomSearch(), TpeSearch(), QuasiMonteCarloSearch()])
 def test_resuming_with_a_seed_tries_new_values(search_method: SearchMethod, tmp_path: Path) -> None:
-    if search_method is SearchMethod.QUASI_MONTE_CARLO:
+    if search_method is QuasiMonteCarloSearch():
         pytest.importorskip("scipy")
     settings: OptimizerSettings = OptimizerSettings(
-        direction=Direction.MINIMIZE,
+        directions=[Direction.MINIMIZE],
         search_method=search_method,
         n_trials=5,
         seed=0,
         study_name="resume",
-        storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
     )
     search_space: dict[str, object] = {"solver": {"learning_rate": {"distribution": "float", "low": 0.0, "high": 1.0}}}
     _optimizer(search_space, settings).optimize(_distance_to_target)
@@ -301,10 +314,10 @@ def test_resuming_with_a_seed_tries_new_values(search_method: SearchMethod, tmp_
 
 def test_resuming_a_finished_grid_runs_no_trial(tmp_path: Path) -> None:
     settings: OptimizerSettings = OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.GRID,
+        directions=[Direction.MINIMIZE],
+        search_method=GridSearch(),
         study_name="resume",
-        storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
     )
     search_space: dict[str, object] = {"depth": {"distribution": "categorical", "candidates": [1, 2, 3]}}
     _optimizer(search_space, settings).optimize(_distance_to_target)
@@ -315,12 +328,12 @@ def test_resuming_a_finished_grid_runs_no_trial(tmp_path: Path) -> None:
 def test_resuming_an_interrupted_grid_runs_the_rest(tmp_path: Path) -> None:
     def settings(n_trials: int | None, seed: int | None) -> OptimizerSettings:
         return OptimizerSettings(
-            direction=Direction.MINIMIZE,
-            search_method=SearchMethod.GRID,
+            directions=[Direction.MINIMIZE],
+            search_method=GridSearch(),
             n_trials=n_trials,
             seed=seed,
             study_name="resume",
-            storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+            storage=f"sqlite:///{tmp_path / 'study.db'}",
         )
 
     search_space: dict[str, object] = {"depth": {"distribution": "categorical", "candidates": [1, 2, 3]}}
@@ -349,11 +362,11 @@ def test_resuming_with_another_space_fails_before_any_trial(
     tmp_path: Path,
 ) -> None:
     settings: OptimizerSettings = OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.TPE,
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
         n_trials=1,
         study_name="resume",
-        storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
     )
     _optimizer({"depth": {"distribution": "int", "low": 1, "high": 3}}, settings).optimize(_distance_to_target)
     optimizer: ParameterOptimizer[SampleModelConfig] = _optimizer(other_search_space, settings)
@@ -367,36 +380,36 @@ def test_resuming_with_another_direction_fails_before_any_trial(tmp_path: Path) 
     _optimizer(
         search_space,
         OptimizerSettings(
-            direction=Direction.MINIMIZE,
-            search_method=SearchMethod.TPE,
+            directions=[Direction.MINIMIZE],
+            search_method=TpeSearch(),
             n_trials=1,
             study_name="resume",
-            storage_url=storage_url,
+            storage=storage_url,
         ),
     ).optimize(_distance_to_target)
     optimizer: ParameterOptimizer[SampleModelConfig] = _optimizer(
         search_space,
         OptimizerSettings(
-            direction=Direction.MAXIMIZE,
-            search_method=SearchMethod.TPE,
+            directions=[Direction.MAXIMIZE],
+            search_method=TpeSearch(),
             n_trials=1,
             study_name="resume",
-            storage_url=storage_url,
+            storage=storage_url,
         ),
     )
-    with pytest.raises(ValueError, match="has direction MINIMIZE"):
+    with pytest.raises(ValueError, match="has directions"):
         optimizer.optimize(_forbidden_objective)
 
 
 @pytest.mark.parametrize(
     "search_method, required_module",
     [
-        (SearchMethod.RANDOM, None),
-        (SearchMethod.QUASI_MONTE_CARLO, "scipy"),
-        (SearchMethod.TPE, None),
-        (SearchMethod.GAUSSIAN_PROCESS, "torch"),
-        (SearchMethod.CMA_ES, "cmaes"),
-        (SearchMethod.GENETIC, None),
+        (RandomSearch(), None),
+        (QuasiMonteCarloSearch(), "scipy"),
+        (TpeSearch(), None),
+        (GaussianProcessSearch(), "torch"),
+        (CmaEsSearch(), "cmaes"),
+        (GeneticSearch(), None),
     ],
 )
 def test_every_sampled_method_runs(search_method: SearchMethod, required_module: str | None) -> None:
@@ -406,18 +419,18 @@ def test_every_sampled_method_runs(search_method: SearchMethod, required_module:
         "depth": {"distribution": "int", "low": 1, "high": 8, "is_log": True},
         "solver": {"learning_rate": {"distribution": "float", "low": 0.0, "high": 1.0}},
     }
-    if search_method is not SearchMethod.CMA_ES:
+    if not isinstance(search_method, CmaEsSearch):
         search_space["mode"] = {"distribution": "categorical", "candidates": ["fast", "slow"]}
     result: OptimizationResult[SampleModelConfig] = _optimizer(
         search_space,
-        OptimizerSettings(direction=Direction.MINIMIZE, search_method=search_method, n_trials=12, seed=0),
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=search_method, n_trials=12, seed=0),
     ).optimize(_distance_to_target)
     assert len(result.study.trials) == 12
 
 
 def _range_optimizer(high_bound: int, settings: OptimizerSettings) -> ParameterOptimizer[SampleRangeConfig]:
     return ParameterOptimizer(
-        config_class=SampleRangeConfig,
+        config_builder=DataclassBuilder(SampleRangeConfig),
         base_config=_config({"low": 1, "high": 2}),
         search_space=_config(
             {
@@ -440,8 +453,8 @@ def test_value_rejected_next_to_every_other_value_fails_construction() -> None:
 
 def test_disabled_probing_defers_checks_to_the_trials() -> None:
     settings: OptimizerSettings = OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.TPE,
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
         n_trials=20,
         seed=0,
         is_probing_enabled=False,
@@ -454,7 +467,7 @@ def test_disabled_probing_defers_checks_to_the_trials() -> None:
         objective,
         caught_exceptions=(ValueError,),
     )
-    assert result.best_value == 0.0
+    assert result.best.value == 0.0
     assert any(trial.state is TrialState.FAIL for trial in result.study.trials)
 
 
@@ -475,24 +488,24 @@ def test_part_of_a_configuration_tunes_values_seen_through_interpolation() -> No
         return 0.0 if config.mode is SampleMode.SLOW else 1.0
 
     result: OptimizationResult[SampleModelConfig] = ParameterOptimizer(
-        config_class=SampleModelConfig,
+        config_builder=DataclassBuilder(SampleModelConfig),
         base_config=root_config.model,
         search_space=_config({"mode": {"distribution": "categorical", "candidates": ["fast", "slow"]}}),
-        settings=OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.GRID),
+        settings=OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()),
     ).optimize(objective)
 
     assert sorted(names) == ["fast", "slow"]
-    assert result.best_config.name == "slow"
-    assert result.resolved_config.name == "slow"
+    assert result.best.config.name == "slow"
+    assert result.best.resolved_config.name == "slow"
 
 
 def _base_config_settings(storage_url: str) -> OptimizerSettings:
     return OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.TPE,
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
         n_trials=1,
         study_name="resume",
-        storage_url=storage_url,
+        storage=storage_url,
     )
 
 
@@ -500,7 +513,7 @@ def test_resuming_with_another_base_config_fails_before_any_trial(tmp_path: Path
     settings: OptimizerSettings = _base_config_settings(f"sqlite:///{tmp_path / 'study.db'}")
     search_space: DictConfig = _config({"depth": {"distribution": "int", "low": 1, "high": 3}})
     ParameterOptimizer(
-        config_class=SampleModelConfig,
+        config_builder=DataclassBuilder(SampleModelConfig),
         base_config=_base_config(),
         search_space=search_space,
         settings=settings,
@@ -508,7 +521,7 @@ def test_resuming_with_another_base_config_fails_before_any_trial(tmp_path: Path
     other_base_config: DictConfig = _base_config()
     other_base_config.solver.momentum = 0.1
     optimizer: ParameterOptimizer[SampleModelConfig] = ParameterOptimizer(
-        config_class=SampleModelConfig,
+        config_builder=DataclassBuilder(SampleModelConfig),
         base_config=other_base_config,
         search_space=search_space,
         settings=settings,
@@ -524,7 +537,7 @@ def test_resuming_ignores_base_values_of_tuned_keys(tmp_path: Path) -> None:
     other_base_config.solver.momentum = 0.1
     results: list[OptimizationResult[SampleModelConfig]] = [
         ParameterOptimizer(
-            config_class=SampleModelConfig,
+            config_builder=DataclassBuilder(SampleModelConfig),
             base_config=base_config,
             search_space=search_space,
             settings=settings,
@@ -561,11 +574,11 @@ def test_resuming_with_another_space_fails_with_only_pruned_trials(tmp_path: Pat
 
 def _grid_settings(storage_url: str, n_trials: int | None = None) -> OptimizerSettings:
     return OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.GRID,
+        directions=[Direction.MINIMIZE],
+        search_method=GridSearch(),
         n_trials=n_trials,
         study_name="resume",
-        storage_url=storage_url,
+        storage=storage_url,
     )
 
 
@@ -594,7 +607,7 @@ def test_resuming_a_grid_retries_the_point_that_stopped_the_run(tmp_path: Path) 
         _optimizer(_DEPTH_GRID, settings).optimize(crashing_objective)
     result: OptimizationResult[SampleModelConfig] = _optimizer(_DEPTH_GRID, settings).optimize(_depth_objective)
     assert _completed_depths(result) == [1, 2, 3, 4]
-    assert result.best_config.depth == 1
+    assert result.best.config.depth == 1
 
 
 def test_resuming_a_finished_grid_retries_every_failed_point_once(tmp_path: Path) -> None:
@@ -664,12 +677,12 @@ def test_grid_retry_limited_by_n_trials_stays_queued(tmp_path: Path) -> None:
 def test_resuming_a_grid_with_a_new_seed_evaluates_each_point_once(first_trials: int, tmp_path: Path) -> None:
     def settings(n_trials: int | None, seed: int) -> OptimizerSettings:
         return OptimizerSettings(
-            direction=Direction.MINIMIZE,
-            search_method=SearchMethod.GRID,
+            directions=[Direction.MINIMIZE],
+            search_method=GridSearch(),
             n_trials=n_trials,
             seed=seed,
             study_name="resume",
-            storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+            storage=f"sqlite:///{tmp_path / 'study.db'}",
         )
 
     search_space: dict[str, object] = {
@@ -685,12 +698,12 @@ def test_resuming_a_grid_with_a_new_seed_evaluates_each_point_once(first_trials:
 @pytest.mark.parametrize(
     "search_method, required_module",
     [
-        (SearchMethod.RANDOM, None),
-        (SearchMethod.QUASI_MONTE_CARLO, "scipy"),
-        (SearchMethod.TPE, None),
-        (SearchMethod.GAUSSIAN_PROCESS, "torch"),
-        (SearchMethod.CMA_ES, "cmaes"),
-        (SearchMethod.GENETIC, None),
+        (RandomSearch(), None),
+        (QuasiMonteCarloSearch(), "scipy"),
+        (TpeSearch(), None),
+        (GaussianProcessSearch(), "torch"),
+        (CmaEsSearch(), "cmaes"),
+        (GeneticSearch(), None),
     ],
 )
 def test_every_sampled_method_follows_the_seed(search_method: SearchMethod, required_module: str | None) -> None:
@@ -703,7 +716,7 @@ def test_every_sampled_method_follows_the_seed(search_method: SearchMethod, requ
                 "depth": {"distribution": "int", "low": 1, "high": 8},
                 "solver": {"learning_rate": {"distribution": "float", "low": 0.0, "high": 1.0}},
             },
-            OptimizerSettings(direction=Direction.MINIMIZE, search_method=search_method, n_trials=12, seed=seed),
+            OptimizerSettings(directions=[Direction.MINIMIZE], search_method=search_method, n_trials=12, seed=seed),
         ).optimize(_distance_to_target)
         return [trial.params for trial in result.study.trials]
 
@@ -731,10 +744,10 @@ def test_is_log_reaches_the_sampling(is_log: bool) -> None:
 @pytest.mark.parametrize(
     "pruning_method, pruner_type",
     [
-        (PruningMethod.NONE, NopPruner),
-        (PruningMethod.MEDIAN, MedianPruner),
-        (PruningMethod.SUCCESSIVE_HALVING, SuccessiveHalvingPruner),
-        (PruningMethod.HYPERBAND, HyperbandPruner),
+        (NoPruning(), NopPruner),
+        (MedianPruning(), MedianPruner),
+        (SuccessiveHalvingPruning(), SuccessiveHalvingPruner),
+        (HyperbandPruning(), HyperbandPruner),
     ],
 )
 def test_pruning_method_reaches_the_study(pruning_method: PruningMethod, pruner_type: type[BasePruner]) -> None:
@@ -757,8 +770,8 @@ def test_timeout_stops_starting_new_trials() -> None:
     result: OptimizationResult[SampleModelConfig] = _optimizer(
         {"depth": {"distribution": "int", "low": 1, "high": 3}},
         OptimizerSettings(
-            direction=Direction.MINIMIZE,
-            search_method=SearchMethod.TPE,
+            directions=[Direction.MINIMIZE],
+            search_method=TpeSearch(),
             n_trials=100,
             timeout_seconds=0.1,
         ),
@@ -787,7 +800,7 @@ def test_grid_does_not_retry_failed_points_outside_of_it(tmp_path: Path) -> None
 
     with pytest.raises(RuntimeError, match="No trial"):
         ParameterOptimizer(
-            config_class=SampleModelConfig,
+            config_builder=DataclassBuilder(SampleModelConfig),
             base_config=base_config,
             search_space=_config({"depth": {"distribution": "categorical", "candidates": [1, 2]}}),
             settings=settings,
@@ -800,7 +813,7 @@ def test_grid_does_not_retry_failed_points_outside_of_it(tmp_path: Path) -> None
         return float(config.depth)
 
     ParameterOptimizer(
-        config_class=SampleModelConfig,
+        config_builder=DataclassBuilder(SampleModelConfig),
         base_config=base_config,
         search_space=_config({"mode": {"distribution": "categorical", "candidates": ["fast", "slow"]}}),
         settings=settings,
@@ -808,16 +821,321 @@ def test_grid_does_not_retry_failed_points_outside_of_it(tmp_path: Path) -> None
     assert sorted(evaluated, key=lambda item: item[0].value) == [(SampleMode.FAST, 1), (SampleMode.SLOW, 1)]
 
 
+def test_several_objectives_return_the_pareto_front() -> None:
+    def objective(config: SampleModelConfig, reporter: TrialReporter) -> tuple[float, float]:
+        return float(config.depth), -float(config.depth)
+
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        _DEPTH_GRID,
+        OptimizerSettings(directions=[Direction.MINIMIZE, Direction.MINIMIZE], search_method=GridSearch()),
+    ).optimize(objective)
+    assert sorted(outcome.config.depth for outcome in result.best_trials) == [1, 2, 3, 4]
+    assert all(outcome.values == [outcome.config.depth, -outcome.config.depth] for outcome in result.best_trials)
+    with pytest.raises(ValueError, match="choose among best_trials"):
+        _ = result.best
+    with pytest.raises(ValueError, match="single objective"):
+        _ = result.best_trials[0].value
+
+
+def test_several_objectives_without_a_tradeoff_have_one_best_trial() -> None:
+    def objective(config: SampleModelConfig, reporter: TrialReporter) -> tuple[float, float]:
+        return float(config.depth), float(config.depth)
+
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        _DEPTH_GRID,
+        OptimizerSettings(directions=[Direction.MINIMIZE, Direction.MINIMIZE], search_method=GridSearch()),
+    ).optimize(objective)
+    assert result.best.config.depth == 1
+
+
+def test_ties_of_a_single_objective_still_have_one_best_trial() -> None:
+    def objective(config: SampleModelConfig, reporter: TrialReporter) -> float:
+        return 0.0
+
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        _DEPTH_GRID,
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()),
+    ).optimize(objective)
+    assert len(result.best_trials) == 1
+    assert result.best.value == 0.0
+
+
+@pytest.mark.parametrize(
+    "search_method, required_module",
+    [
+        (RandomSearch(), None),
+        (QuasiMonteCarloSearch(), "scipy"),
+        (TpeSearch(), None),
+        (GaussianProcessSearch(), "torch"),
+        (GeneticSearch(), None),
+    ],
+)
+def test_sampled_methods_handle_several_objectives(search_method: SearchMethod, required_module: str | None) -> None:
+    if required_module is not None:
+        pytest.importorskip(required_module)
+
+    def objective(config: SampleModelConfig, reporter: TrialReporter) -> tuple[float, float]:
+        return config.solver.learning_rate, 1.0 - config.solver.learning_rate
+
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        {"solver": {"learning_rate": {"distribution": "float", "low": 0.0, "high": 1.0}}},
+        OptimizerSettings(
+            directions=[Direction.MINIMIZE, Direction.MINIMIZE],
+            search_method=search_method,
+            n_trials=12,
+            seed=0,
+        ),
+    ).optimize(objective)
+    assert result.best_trials
+
+
+def test_method_without_several_objectives_fails_at_construction() -> None:
+    pytest.importorskip("cmaes")
+    with pytest.raises(ValueError, match="does not support several objectives"):
+        _optimizer(
+            {"solver": {"learning_rate": {"distribution": "float", "low": 0.0, "high": 1.0}}},
+            OptimizerSettings(
+                directions=[Direction.MINIMIZE, Direction.MINIMIZE],
+                search_method=CmaEsSearch(),
+                n_trials=1,
+            ),
+        )
+
+
+def test_resuming_with_another_number_of_objectives_fails(tmp_path: Path) -> None:
+    storage: str = f"sqlite:///{tmp_path / 'study.db'}"
+
+    def settings(directions: list[Direction]) -> OptimizerSettings:
+        return OptimizerSettings(
+            directions=directions,
+            search_method=GridSearch(),
+            study_name="resume",
+            storage=storage,
+        )
+
+    _optimizer(_DEPTH_GRID, settings([Direction.MINIMIZE])).optimize(_depth_objective)
+    optimizer: ParameterOptimizer[SampleModelConfig] = _optimizer(
+        _DEPTH_GRID,
+        settings([Direction.MINIMIZE, Direction.MINIMIZE]),
+    )
+    with pytest.raises(ValueError, match="has directions"):
+        optimizer.optimize(_forbidden_objective)
+
+
+def test_any_builder_can_produce_the_object_of_a_trial() -> None:
+    def build_tuple(config: DictConfig) -> tuple[int, str]:
+        return config.depth, config.name
+
+    def objective(config: tuple[int, str], reporter: TrialReporter) -> float:
+        return float(config[0])
+
+    result: OptimizationResult[tuple[int, str]] = ParameterOptimizer(
+        config_builder=build_tuple,
+        base_config=_config({"name": "plain", "depth": 0}),
+        search_space=_config(_DEPTH_GRID),
+        settings=OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()),
+    ).optimize(objective)
+    assert result.best.config == (1, "plain")
+
+
+def test_part_of_a_configuration_merged_with_overrides_keeps_them() -> None:
+    root_config: DictConfig = _config({"model": {"name": "root", "solver": {"learning_rate": 0.5, "momentum": 0.9}}})
+    base_config = OmegaConf.merge(root_config.model, {"name": "merged"})
+    assert isinstance(base_config, DictConfig)
+    names: list[str] = []
+
+    def objective(config: SampleModelConfig, reporter: TrialReporter) -> float:
+        names.append(config.name)
+        return float(config.depth)
+
+    result: OptimizationResult[SampleModelConfig] = ParameterOptimizer(
+        config_builder=DataclassBuilder(SampleModelConfig),
+        base_config=base_config,
+        search_space=_config(_DEPTH_GRID),
+        settings=OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()),
+    ).optimize(objective)
+    assert set(names) == {"merged"}
+    assert result.best.resolved_config.name == "merged"
+
+
 def test_resuming_with_the_largest_seed_wraps_around(tmp_path: Path) -> None:
     settings: OptimizerSettings = OptimizerSettings(
-        direction=Direction.MINIMIZE,
-        search_method=SearchMethod.RANDOM,
+        directions=[Direction.MINIMIZE],
+        search_method=RandomSearch(),
         n_trials=1,
         seed=2**32 - 1,
         study_name="resume",
-        storage_url=f"sqlite:///{tmp_path / 'study.db'}",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
     )
     search_space: dict[str, object] = {"depth": {"distribution": "int", "low": 1, "high": 3}}
     _optimizer(search_space, settings).optimize(_distance_to_target)
     result: OptimizationResult[SampleModelConfig] = _optimizer(search_space, settings).optimize(_distance_to_target)
     assert len(result.study.trials) == 2
+
+
+def test_resume_ignored_paths_may_change_between_runs(tmp_path: Path) -> None:
+    settings: OptimizerSettings = OptimizerSettings(
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
+        n_trials=1,
+        study_name="resume",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
+        resume_ignored_paths=["name"],
+    )
+    search_space: DictConfig = _config({"depth": {"distribution": "int", "low": 1, "high": 3}})
+    results: list[OptimizationResult[SampleModelConfig]] = [
+        ParameterOptimizer(
+            config_builder=DataclassBuilder(SampleModelConfig),
+            base_config=_config({"name": name, "solver": {"learning_rate": 0.5, "momentum": 0.9}}),
+            search_space=search_space,
+            settings=settings,
+        ).optimize(_distance_to_target)
+        for name in ("first", "second")
+    ]
+    assert len(results[-1].study.trials) == 2
+    assert results[-1].best.config.name == "second"
+
+
+def test_other_paths_still_fail_with_resume_ignored_paths(tmp_path: Path) -> None:
+    settings: OptimizerSettings = OptimizerSettings(
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
+        n_trials=1,
+        study_name="resume",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
+        resume_ignored_paths=["name"],
+    )
+    search_space: DictConfig = _config({"depth": {"distribution": "int", "low": 1, "high": 3}})
+    ParameterOptimizer(
+        config_builder=DataclassBuilder(SampleModelConfig),
+        base_config=_base_config(),
+        search_space=search_space,
+        settings=settings,
+    ).optimize(_distance_to_target)
+    other_base_config: DictConfig = _base_config()
+    other_base_config.solver.momentum = 0.1
+    optimizer: ParameterOptimizer[SampleModelConfig] = ParameterOptimizer(
+        config_builder=DataclassBuilder(SampleModelConfig),
+        base_config=other_base_config,
+        search_space=search_space,
+        settings=settings,
+    )
+    with pytest.raises(ValueError, match="resume_ignored_paths"):
+        optimizer.optimize(_forbidden_objective)
+
+
+def test_grid_tries_every_step_of_numeric_parameters_and_retries_them(tmp_path: Path) -> None:
+    settings: OptimizerSettings = OptimizerSettings(
+        directions=[Direction.MINIMIZE],
+        search_method=GridSearch(),
+        study_name="resume",
+        storage=f"sqlite:///{tmp_path / 'study.db'}",
+    )
+    search_space: dict[str, object] = {
+        "depth": {"distribution": "int", "low": 1, "high": 5, "step": 2},
+        "solver": {"learning_rate": {"distribution": "float", "low": 0.1, "high": 0.3, "step": 0.1}},
+    }
+
+    def failing_objective(config: SampleModelConfig, reporter: TrialReporter) -> float:
+        if config.depth == 3:
+            raise ArithmeticError("flaky")
+        return float(config.depth)
+
+    first_result: OptimizationResult[SampleModelConfig] = _optimizer(search_space, settings).optimize(
+        failing_objective,
+        caught_exceptions=(ArithmeticError,),
+    )
+    assert len(first_result.study.trials) == 9
+    result: OptimizationResult[SampleModelConfig] = _optimizer(search_space, settings).optimize(_depth_objective)
+    completed: list[FrozenTrial] = [trial for trial in result.study.trials if trial.state is TrialState.COMPLETE]
+    assert len(completed) == 9
+    assert sorted({trial.params["depth"] for trial in completed}) == [1, 3, 5]
+
+
+def test_stepped_sampling_stays_on_the_steps() -> None:
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        {"depth": {"distribution": "int", "low": 2, "high": 10, "step": 4}},
+        _sampled_settings(n_trials=20, seed=0),
+    ).optimize(_distance_to_target)
+    assert {trial.params["depth"] for trial in result.study.trials} <= {2, 6, 10}
+
+
+def test_callbacks_see_every_trial() -> None:
+    seen: list[int] = []
+
+    def record(study: Study, trial: FrozenTrial) -> None:
+        seen.append(trial.number)
+
+    _optimizer(
+        {"depth": {"distribution": "int", "low": 1, "high": 3}},
+        _sampled_settings(n_trials=3),
+    ).optimize(_distance_to_target, callbacks=[record])
+    assert seen == [0, 1, 2]
+
+
+def test_parallel_jobs_run_every_trial() -> None:
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        _DEPTH_GRID,
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch(), n_jobs=2),
+    ).optimize(_depth_objective)
+    # Parallel workers of a grid may evaluate its last points twice.
+    assert set(_completed_depths(result)) == {1, 2, 3, 4}
+
+
+def test_storage_object_resumes_a_study() -> None:
+    settings: OptimizerSettings = OptimizerSettings(
+        directions=[Direction.MINIMIZE],
+        search_method=TpeSearch(),
+        n_trials=1,
+        study_name="resume",
+        storage=InMemoryStorage(),
+    )
+    search_space: dict[str, object] = {"depth": {"distribution": "int", "low": 1, "high": 3}}
+    _optimizer(search_space, settings).optimize(_distance_to_target)
+    result: OptimizationResult[SampleModelConfig] = _optimizer(search_space, settings).optimize(_distance_to_target)
+    assert len(result.study.trials) == 2
+
+
+@pytest.mark.parametrize(
+    "pruning_method",
+    [
+        MedianPruning(startup_trial_count=0),
+        SuccessiveHalvingPruning(min_resource=1, reduction_factor=2),
+        HyperbandPruning(max_resource=4),
+    ],
+)
+def test_options_of_a_pruning_method_build(pruning_method: PruningMethod) -> None:
+    def objective(config: SampleModelConfig, reporter: TrialReporter) -> float:
+        reporter.report(float(config.depth), 0)
+        return float(config.depth)
+
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        {"depth": {"distribution": "int", "low": 1, "high": 3}},
+        OptimizerSettings(
+            directions=[Direction.MINIMIZE],
+            search_method=RandomSearch(),
+            pruning_method=pruning_method,
+            n_trials=1,
+        ),
+    ).optimize(objective)
+    assert result.best.config.depth in (1, 2, 3)
+
+
+@pytest.mark.parametrize(
+    "search_method, required_module",
+    [
+        (QuasiMonteCarloSearch(sequence="halton", is_scrambled=True), "scipy"),
+        (TpeSearch(startup_trial_count=2, candidate_count=4, is_multivariate=True, is_grouped=True), None),
+        (GaussianProcessSearch(startup_trial_count=2, is_deterministic_objective=True), "torch"),
+        (CmaEsSearch(population_size=4, is_separable=True), "cmaes"),
+        (GeneticSearch(population_size=4, mutation_probability=0.1), None),
+    ],
+)
+def test_options_of_a_search_method_reach_the_run(search_method: SearchMethod, required_module: str | None) -> None:
+    if required_module is not None:
+        pytest.importorskip(required_module)
+    result: OptimizationResult[SampleModelConfig] = _optimizer(
+        {"solver": {"learning_rate": {"distribution": "float", "low": 0.1, "high": 0.9}}},
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=search_method, n_trials=8, seed=0),
+    ).optimize(_distance_to_target)
+    assert len(result.study.trials) == 8

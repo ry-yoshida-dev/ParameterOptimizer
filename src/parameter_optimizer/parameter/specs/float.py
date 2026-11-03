@@ -5,10 +5,11 @@ from typing import cast
 from optuna import Trial
 from optuna.distributions import BaseDistribution, FloatDistribution
 
-from ..spec import ParameterSpec
+from ..spec import ParameterSpec, parameter_spec_registry
 from ..value import ParameterValue
 
 
+@parameter_spec_registry.register("float")
 @dataclass(frozen=True, kw_only=True)
 class FloatSpec(ParameterSpec):
     """
@@ -22,18 +23,23 @@ class FloatSpec(ParameterSpec):
         Upper bound, inclusive.
     is_log : bool
         Whether the range is explored on a logarithmic scale.
+    step : float | None
+        Distance between the values, or None for a continuous range. Optuna lowers ``high`` to the last value it
+        reaches.
 
     Raises
     ------
     TypeError
         If a bound is not a float.
     ValueError
-        If a bound is not finite, the range is empty, or a logarithmic range does not start above zero.
+        If a bound is not finite, the range is empty, a logarithmic range does not start above zero or has a step, or
+        the step is not positive and finite.
     """
 
     low: float
     high: float
     is_log: bool = False
+    step: float | None = None
 
     def __post_init__(self) -> None:
         for bound in (cast(object, self.low), cast(object, self.high)):
@@ -45,6 +51,27 @@ class FloatSpec(ParameterSpec):
             raise ValueError(f"float requires low < high. got low={self.low}, high={self.high}")
         if self.is_log and self.low <= 0.0:
             raise ValueError(f"A logarithmic float requires a positive low. got {self.low}")
+        if self.step is not None:
+            if self.is_log:
+                raise ValueError("A logarithmic float cannot have a step.")
+            if not math.isfinite(self.step) or self.step <= 0.0:
+                raise ValueError(f"float step must be positive and finite. got {self.step}")
+
+    @property
+    def grid_values(self) -> list[ParameterValue] | None:
+        """
+        Values a grid search tries.
+
+        Returns
+        -------
+        list[ParameterValue] | None
+            Every step of the range, or None without a step.
+        """
+        if self.step is None:
+            return None
+        high: float = self._distribution.high
+        value_count: int = round((high - self.low) / self.step) + 1
+        return [min(self.low + index * self.step, high) for index in range(value_count)]
 
     @property
     def probe_values(self) -> list[ParameterValue]:
@@ -56,7 +83,7 @@ class FloatSpec(ParameterSpec):
         list[ParameterValue]
             Both bounds.
         """
-        return [self.low, self.high]
+        return [self.low, self._distribution.high]
 
     def to_optuna_distribution(self) -> BaseDistribution:
         """
@@ -67,7 +94,7 @@ class FloatSpec(ParameterSpec):
         BaseDistribution
             Equivalent Optuna distribution.
         """
-        return FloatDistribution(self.low, self.high, log=self.is_log)
+        return self._distribution
 
     def suggest(self, trial: Trial, name: str) -> ParameterValue:
         """
@@ -85,4 +112,8 @@ class FloatSpec(ParameterSpec):
         ParameterValue
             Chosen float.
         """
-        return trial.suggest_float(name, self.low, self.high, log=self.is_log)
+        return trial.suggest_float(name, self.low, self.high, log=self.is_log, step=self.step)
+
+    @property
+    def _distribution(self) -> FloatDistribution:
+        return FloatDistribution(self.low, self.high, log=self.is_log, step=self.step)

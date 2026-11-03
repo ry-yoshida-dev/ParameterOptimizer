@@ -1,13 +1,14 @@
 from dataclasses import dataclass
-from typing import cast
+from typing import ClassVar, cast
 
 from optuna import Trial
 from optuna.distributions import BaseDistribution, CategoricalDistribution
 
-from ..spec import ParameterSpec
+from ..spec import ParameterSpec, parameter_spec_registry
 from ..value import ParameterValue
 
 
+@parameter_spec_registry.register("categorical")
 @dataclass(frozen=True, kw_only=True)
 class CategoricalSpec(ParameterSpec):
     """
@@ -26,6 +27,8 @@ class CategoricalSpec(ParameterSpec):
         If the candidates are empty or duplicated.
     """
 
+    is_numeric: ClassVar[bool] = False
+
     candidates: list[ParameterValue]
 
     def __post_init__(self) -> None:
@@ -39,6 +42,18 @@ class CategoricalSpec(ParameterSpec):
                 raise TypeError(f"Candidates must be scalars. got {type(candidate).__name__}: {candidate}")
         if len(set(self.candidates)) != len(self.candidates):
             raise ValueError(f"categorical candidates must be unique. got {self.candidates}")
+
+    @property
+    def grid_values(self) -> list[ParameterValue] | None:
+        """
+        Values a grid search tries.
+
+        Returns
+        -------
+        list[ParameterValue] | None
+            Every candidate.
+        """
+        return list(self.candidates)
 
     @property
     def probe_values(self) -> list[ParameterValue]:

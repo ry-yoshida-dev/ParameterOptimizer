@@ -1,53 +1,39 @@
-from enum import Enum
+from abc import ABC, abstractmethod
 from importlib.util import find_spec
+from typing import ClassVar
 
-from optuna.samplers import (
-    BaseSampler,
-    CmaEsSampler,
-    GPSampler,
-    NSGAIISampler,
-    QMCSampler,
-    RandomSampler,
-    TPESampler,
-)
+from optuna import Study
+from optuna.samplers import BaseSampler
 
-from .resumable_grid_sampler import ResumableGridSampler
+from ..registry import Registry
 from .space import SearchSpace
 
-_GRID_SHUFFLE_SEED: int = 0
 
-
-class SearchMethod(Enum):
+class SearchMethod(ABC):
     """
     Algorithm deciding which parameter combinations are tried.
 
+    Decorating a dataclass implementation with ``search_method_registry.register`` makes it selectable from a
+    configuration.
+
     Attributes
     ----------
-    GRID : str
-        Try every combination of the candidates; requires only ``categorical`` parameters.
-    RANDOM : str
-        Choose each combination independently at random; a useful baseline.
-    QUASI_MONTE_CARLO : str
-        Cover the space evenly with a low-discrepancy sequence.
-    TPE : str
-        Bayesian optimization with a Tree-structured Parzen Estimator; a robust default for mixed parameters.
-    GAUSSIAN_PROCESS : str
-        Bayesian optimization with a Gaussian process; suits few trials of an expensive objective.
-    CMA_ES : str
-        Evolution strategy for many trials; rejects ``categorical`` parameters.
-    GENETIC : str
-        Genetic algorithm (NSGA-II) that also handles ``categorical`` parameters; needs many trials.
+    required_modules : ClassVar[tuple[str, ...]]
+        Optional modules this method needs.
+    extra : ClassVar[str | None]
+        Extra of this package that installs ``required_modules``.
+    is_self_terminating : ClassVar[bool]
+        Whether this method ends by itself, so that a run needs neither ``n_trials`` nor ``timeout_seconds``.
+    is_multi_objective_supported : ClassVar[bool]
+        Whether this method handles several objectives.
     """
 
-    GRID = "grid"
-    RANDOM = "random"
-    QUASI_MONTE_CARLO = "quasi_monte_carlo"
-    TPE = "tpe"
-    GAUSSIAN_PROCESS = "gaussian_process"
-    CMA_ES = "cma_es"
-    GENETIC = "genetic"
+    required_modules: ClassVar[tuple[str, ...]] = ()
+    extra: ClassVar[str | None] = None
+    is_self_terminating: ClassVar[bool] = False
+    is_multi_objective_supported: ClassVar[bool] = True
 
-    def validate(self, search_space: SearchSpace) -> None:
+    def validate(self, search_space: SearchSpace, objective_count: int) -> None:
         """
         Check that this method can run and really explores a search space.
 
@@ -58,35 +44,45 @@ class SearchMethod(Enum):
         ----------
         search_space : SearchSpace
             Search space to explore.
+        objective_count : int
+            Number of objectives being optimized.
 
         Raises
         ------
         ModuleNotFoundError
             If an optional dependency of this method is not installed.
         ValueError
-            If this method does not support the parameters of ``search_space``.
+            If this method does not support the parameters of ``search_space`` or ``objective_count``.
         """
-        missing_modules: list[str] = [module for module in self._required_modules() if find_spec(module) is None]
+        missing_modules: list[str] = [module for module in self.required_modules if find_spec(module) is None]
         if missing_modules:
-            extra: str = self.value.replace("_", "-")
-            raise ModuleNotFoundError(f"{self.value} requires {missing_modules}. Install the {extra} extra.")
-        match self:
-            case SearchMethod.GRID:
-                if search_space.numeric_paths:
-                    raise ValueError(f"grid requires categorical parameters. got {search_space.numeric_paths}")
-            case SearchMethod.CMA_ES:
-                categorical_paths: list[str] = list(search_space.categorical_candidates)
-                if categorical_paths:
-                    raise ValueError(f"cma_es does not support categorical parameters: {categorical_paths}")
-            case (
-                SearchMethod.RANDOM
-                | SearchMethod.QUASI_MONTE_CARLO
-                | SearchMethod.TPE
-                | SearchMethod.GAUSSIAN_PROCESS
-                | SearchMethod.GENETIC
-            ):
-                pass
+            hint: str = "Install them." if self.extra is None else f"Install the {self.extra} extra."
+            raise ModuleNotFoundError(f"{type(self).__name__} requires {missing_modules}. {hint}")
+        if objective_count > 1 and not self.is_multi_objective_supported:
+            raise ValueError(f"{type(self).__name__} does not support several objectives.")
 
+    def prepare(self, study: Study, search_space: SearchSpace, seed: int | None) -> bool:
+        """
+        Attach the sampler of this method to a study that may hold trials of an earlier run.
+
+        Parameters
+        ----------
+        study : Study
+            Study about to run.
+        search_space : SearchSpace
+            Search space to explore.
+        seed : int | None
+            Random seed, or None for a non-reproducible run.
+
+        Returns
+        -------
+        bool
+            Whether any trial remains to be run.
+        """
+        study.sampler = self.build_sampler(search_space, seed)
+        return True
+
+    @abstractmethod
     def build_sampler(self, search_space: SearchSpace, seed: int | None) -> BaseSampler:
         """
         Create the sampler of this method.
@@ -96,37 +92,13 @@ class SearchMethod(Enum):
         search_space : SearchSpace
             Search space to explore.
         seed : int | None
-            Random seed, or None for a non-reproducible run; ``GRID`` ignores it.
+            Random seed, or None for a non-reproducible run.
 
         Returns
         -------
         BaseSampler
             New sampler.
         """
-        match self:
-            case SearchMethod.GRID:
-                # Stored trials refer to positions in the shuffled grid, so another seed would misread them on resume.
-                return ResumableGridSampler(search_space.categorical_candidates, seed=_GRID_SHUFFLE_SEED)
-            case SearchMethod.RANDOM:
-                return RandomSampler(seed=seed)
-            case SearchMethod.QUASI_MONTE_CARLO:
-                return QMCSampler(seed=seed)
-            case SearchMethod.TPE:
-                return TPESampler(seed=seed)
-            case SearchMethod.GAUSSIAN_PROCESS:
-                return GPSampler(seed=seed)
-            case SearchMethod.CMA_ES:
-                return CmaEsSampler(seed=seed)
-            case SearchMethod.GENETIC:
-                return NSGAIISampler(seed=seed)
 
-    def _required_modules(self) -> tuple[str, ...]:
-        match self:
-            case SearchMethod.QUASI_MONTE_CARLO:
-                return ("scipy",)
-            case SearchMethod.GAUSSIAN_PROCESS:
-                return ("scipy", "torch")
-            case SearchMethod.CMA_ES:
-                return ("cmaes",)
-            case SearchMethod.GRID | SearchMethod.RANDOM | SearchMethod.TPE | SearchMethod.GENETIC:
-                return ()
+
+search_method_registry: Registry[SearchMethod] = Registry(base_class=SearchMethod, key="name")

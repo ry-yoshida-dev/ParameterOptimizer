@@ -1,32 +1,28 @@
-from enum import Enum
+from abc import ABC, abstractmethod
+from typing import ClassVar
 
-from optuna.pruners import BasePruner, HyperbandPruner, MedianPruner, NopPruner, SuccessiveHalvingPruner
+from optuna.pruners import BasePruner
+
+from ..registry import Registry
 
 
-class PruningMethod(Enum):
+class PruningMethod(ABC):
     """
     Rule stopping unpromising trials early from the values reported by the objective.
 
     It only decides how long a trial runs, so it combines with any ``SearchMethod``. Without reported values, a trial
-    runs to completion and ``ParameterOptimizer`` warns.
+    runs to completion and ``ParameterOptimizer`` warns. Decorating a dataclass implementation with
+    ``pruning_method_registry.register`` makes it selectable from a configuration.
 
     Attributes
     ----------
-    NONE : str
-        Every trial runs to completion.
-    MEDIAN : str
-        Stop a trial that falls behind the median of earlier trials at the same step.
-    SUCCESSIVE_HALVING : str
-        Repeatedly keep only the better part of the trials and give them more steps.
-    HYPERBAND : str
-        Run successive halving with several budgets, so that the rate of elimination need not be chosen.
+    is_stopping_trials : ClassVar[bool]
+        Whether this rule can stop a trial, which requires a single objective and reported values.
     """
 
-    NONE = "none"
-    MEDIAN = "median"
-    SUCCESSIVE_HALVING = "successive_halving"
-    HYPERBAND = "hyperband"
+    is_stopping_trials: ClassVar[bool] = True
 
+    @abstractmethod
     def build(self) -> BasePruner:
         """
         Create the pruner.
@@ -36,12 +32,6 @@ class PruningMethod(Enum):
         BasePruner
             New pruner.
         """
-        match self:
-            case PruningMethod.NONE:
-                return NopPruner()
-            case PruningMethod.MEDIAN:
-                return MedianPruner()
-            case PruningMethod.SUCCESSIVE_HALVING:
-                return SuccessiveHalvingPruner()
-            case PruningMethod.HYPERBAND:
-                return HyperbandPruner()
+
+
+pruning_method_registry: Registry[PruningMethod] = Registry(base_class=PruningMethod, key="name")

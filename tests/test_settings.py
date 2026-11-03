@@ -1,23 +1,57 @@
 import pytest
-from dataclass_initializer import DataclassInitializer
+from omegaconf import DictConfig, OmegaConf
 
-from parameter_optimizer import Direction, OptimizerSettings, PruningMethod, SearchMethod
+from parameter_optimizer import (
+    Direction,
+    GridSearch,
+    MedianPruning,
+    NoPruning,
+    OptimizerSettings,
+    SuccessiveHalvingPruning,
+    TpeSearch,
+)
 
 
 def test_builds_from_configuration() -> None:
-    settings: OptimizerSettings = DataclassInitializer.build(
-        OptimizerSettings,
+    settings: OptimizerSettings = OptimizerSettings.from_config(
         {
-            "direction": "maximize",
-            "search_method": "gaussian_process",
+            "directions": ["maximize"],
+            "search_method": "tpe",
             "pruning_method": "successive_halving",
             "n_trials": 10,
             "seed": 1,
         },
     )
-    assert settings.direction is Direction.MAXIMIZE
-    assert settings.search_method is SearchMethod.GAUSSIAN_PROCESS
-    assert settings.pruning_method is PruningMethod.SUCCESSIVE_HALVING
+    assert settings.directions == [Direction.MAXIMIZE]
+    assert settings.search_method == TpeSearch()
+    assert settings.pruning_method == SuccessiveHalvingPruning()
+
+
+def test_builds_options_of_the_implementations_from_a_dict_config() -> None:
+    config = OmegaConf.create(
+        {
+            "directions": ["minimize", "maximize"],
+            "search_method": {"name": "tpe", "startup_trial_count": 3, "is_multivariate": True},
+            "n_trials": 10,
+            "resume_ignored_paths": ["output_directory"],
+        }
+    )
+    assert isinstance(config, DictConfig)
+    settings: OptimizerSettings = OptimizerSettings.from_config(config)
+    assert settings.search_method == TpeSearch(startup_trial_count=3, is_multivariate=True)
+    assert settings.pruning_method == NoPruning()
+    assert settings.resume_ignored_paths == ["output_directory"]
+
+
+def test_builds_options_of_a_pruning_method() -> None:
+    settings: OptimizerSettings = OptimizerSettings.from_config(
+        {
+            "directions": ["minimize"],
+            "search_method": "grid",
+            "pruning_method": {"name": "median", "warmup_step_count": 2},
+        },
+    )
+    assert settings.pruning_method == MedianPruning(warmup_step_count=2)
 
 
 @pytest.mark.parametrize(
@@ -34,11 +68,11 @@ def test_builds_from_configuration() -> None:
 )
 def test_rejects_invalid_values(overrides: dict[str, object]) -> None:
     with pytest.raises(ValueError):
-        DataclassInitializer.build(OptimizerSettings, {"direction": "minimize", "search_method": "tpe", **overrides})
+        OptimizerSettings.from_config({"directions": ["minimize"], "search_method": "tpe", **overrides})
 
 
 def test_only_grid_may_omit_trial_limits() -> None:
-    assert OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.GRID).n_trials is None
-    with pytest.raises(ValueError, match="tpe requires n_trials or timeout_seconds"):
-        OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.TPE)
-    assert OptimizerSettings(direction=Direction.MINIMIZE, search_method=SearchMethod.TPE, timeout_seconds=1.0)
+    assert OptimizerSettings(directions=[Direction.MINIMIZE], search_method=GridSearch()).n_trials is None
+    with pytest.raises(ValueError, match="TpeSearch requires n_trials or timeout_seconds"):
+        OptimizerSettings(directions=[Direction.MINIMIZE], search_method=TpeSearch())
+    assert OptimizerSettings(directions=[Direction.MINIMIZE], search_method=TpeSearch(), timeout_seconds=1.0)

@@ -4,7 +4,7 @@ from collections.abc import Iterator
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from parameter_optimizer import CategoricalSpec, FloatSpec, ParameterValue, SearchSpace
+from parameter_optimizer import CategoricalSpec, FloatSpec, IntSpec, ParameterValue, SearchSpace
 
 
 def _config(content: dict[str, object]) -> DictConfig:
@@ -22,8 +22,8 @@ def test_collects_nested_definitions_as_dotted_paths() -> None:
             }
         )
     )
-    assert space.categorical_candidates == {"mode": ["fast", "slow"]}
-    assert space.numeric_paths == ["solver.learning_rate"]
+    assert space.grid_candidates == {"mode": ["fast", "slow"]}
+    assert space.non_enumerable_paths == ["solver.learning_rate"]
 
 
 @pytest.mark.parametrize(
@@ -55,7 +55,7 @@ def test_field_named_distribution_can_be_tuned() -> None:
     space: SearchSpace = SearchSpace.from_config(
         _config({"distribution": {"distribution": "categorical", "candidates": ["normal", "uniform"]}})
     )
-    assert space.categorical_candidates == {"distribution": ["normal", "uniform"]}
+    assert space.grid_candidates == {"distribution": ["normal", "uniform"]}
 
 
 def test_probe_groups_cover_every_value_next_to_every_other_value() -> None:
@@ -156,6 +156,20 @@ def test_apply_accepts_read_only_configuration(is_part: bool) -> None:
     space: SearchSpace = SearchSpace({path: CategoricalSpec(candidates=[5])})
     assert OmegaConf.select(space.apply(base_config, {path: 5}), path) == 5
     assert OmegaConf.is_readonly(base_config)
+
+
+def test_grid_candidates_enumerate_stepped_numeric_parameters() -> None:
+    space: SearchSpace = SearchSpace(
+        {
+            "a": IntSpec(low=0, high=7, step=3),
+            "b": FloatSpec(low=0.0, high=0.3, step=0.1),
+            "c": FloatSpec(low=0.0, high=1.0),
+            "d": IntSpec(low=0, high=2),
+        }
+    )
+    assert space.grid_candidates["a"] == [0, 3, 6]
+    assert space.grid_candidates["b"] == pytest.approx([0.0, 0.1, 0.2, 0.3])
+    assert space.non_enumerable_paths == ["c", "d"]
 
 
 def test_apply_requires_every_parameter() -> None:

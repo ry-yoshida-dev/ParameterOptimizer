@@ -1,7 +1,17 @@
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from parameter_optimizer import SearchMethod, SearchSpace
+from parameter_optimizer import (
+    CmaEsSearch,
+    GaussianProcessSearch,
+    GeneticSearch,
+    GridSearch,
+    QuasiMonteCarloSearch,
+    RandomSearch,
+    SearchMethod,
+    SearchSpace,
+    TpeSearch,
+)
 
 
 def _space(content: dict[str, object]) -> SearchSpace:
@@ -23,37 +33,37 @@ _CATEGORICAL: dict[str, object] = {"b": {"distribution": "categorical", "candida
 
 
 def test_grid_rejects_numeric_parameter() -> None:
-    with pytest.raises(ValueError, match=r"grid requires categorical parameters. got \['a'\]"):
-        SearchMethod.GRID.validate(_space({**_NUMERIC, **_CATEGORICAL}))
+    with pytest.raises(ValueError, match=r"grid requires categorical parameters or a step. got \['a'\]"):
+        GridSearch().validate(_space({**_NUMERIC, **_CATEGORICAL}), 1)
 
 
 def test_cma_es_rejects_categorical_parameter() -> None:
     pytest.importorskip("cmaes")
     with pytest.raises(ValueError, match=r"cma_es does not support categorical parameters: \['b'\]"):
-        SearchMethod.CMA_ES.validate(_space({**_NUMERIC, **_CATEGORICAL}))
+        CmaEsSearch().validate(_space({**_NUMERIC, **_CATEGORICAL}), 1)
 
 
 @pytest.mark.parametrize(
     "method",
     [
-        SearchMethod.RANDOM,
-        SearchMethod.QUASI_MONTE_CARLO,
-        SearchMethod.TPE,
-        SearchMethod.GAUSSIAN_PROCESS,
-        SearchMethod.GENETIC,
+        RandomSearch(),
+        QuasiMonteCarloSearch(),
+        TpeSearch(),
+        GaussianProcessSearch(),
+        GeneticSearch(),
     ],
 )
 def test_other_methods_accept_mixed_parameters(method: SearchMethod, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("parameter_optimizer.search.method.find_spec", _find_any_module)
-    method.validate(_space({**_NUMERIC, **_CATEGORICAL}))
+    method.validate(_space({**_NUMERIC, **_CATEGORICAL}), 1)
 
 
 @pytest.mark.parametrize(
     "method, extra",
     [
-        (SearchMethod.QUASI_MONTE_CARLO, "quasi-monte-carlo"),
-        (SearchMethod.GAUSSIAN_PROCESS, "gaussian-process"),
-        (SearchMethod.CMA_ES, "cma-es"),
+        (QuasiMonteCarloSearch(), "quasi-monte-carlo"),
+        (GaussianProcessSearch(), "gaussian-process"),
+        (CmaEsSearch(), "cma-es"),
     ],
 )
 def test_reports_missing_optional_dependency(
@@ -63,4 +73,4 @@ def test_reports_missing_optional_dependency(
 ) -> None:
     monkeypatch.setattr("parameter_optimizer.search.method.find_spec", _find_no_module)
     with pytest.raises(ModuleNotFoundError, match=f"Install the {extra} extra"):
-        method.validate(_space(_NUMERIC))
+        method.validate(_space(_NUMERIC), 1)

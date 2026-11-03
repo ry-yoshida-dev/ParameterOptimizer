@@ -1,7 +1,7 @@
 import pytest
 from dataclass_initializer import DataclassInitializer
 
-from parameter_optimizer import CategoricalSpec, FloatSpec, IntSpec, ParameterDistribution, ParameterSpec
+from parameter_optimizer import CategoricalSpec, FloatSpec, IntSpec, ParameterSpec, parameter_spec_registry
 
 
 @pytest.mark.parametrize(
@@ -65,36 +65,50 @@ def test_int_rejects_invalid_range(low: int, high: int, is_log: bool, error_type
 
 
 @pytest.mark.parametrize(
-    "distribution, fields, spec",
+    "definition, spec",
     [
-        (ParameterDistribution.CATEGORICAL, {"candidates": ["a"]}, CategoricalSpec(candidates=["a"])),
+        ({"distribution": "categorical", "candidates": ["a"]}, CategoricalSpec(candidates=["a"])),
         (
-            ParameterDistribution.FLOAT,
-            {"low": 0.1, "high": 1.0, "is_log": True},
+            {"distribution": "float", "low": 0.1, "high": 1.0, "is_log": True},
             FloatSpec(low=0.1, high=1.0, is_log=True),
         ),
-        (ParameterDistribution.INT, {"low": 1, "high": 2}, IntSpec(low=1, high=2)),
+        ({"distribution": "int", "low": 1, "high": 2}, IntSpec(low=1, high=2)),
+        ({"distribution": "int", "low": 1, "high": 5, "step": 2}, IntSpec(low=1, high=5, step=2)),
+        ({"distribution": "float", "low": 0.0, "high": 1.0, "step": 0.5}, FloatSpec(low=0.0, high=1.0, step=0.5)),
     ],
 )
-def test_distribution_builds_spec(
-    distribution: ParameterDistribution,
-    fields: dict[str, object],
-    spec: ParameterSpec,
-) -> None:
-    assert distribution.build_spec(fields) == spec
+def test_registry_builds_spec(definition: dict[str, object], spec: ParameterSpec) -> None:
+    assert parameter_spec_registry.build(definition) == spec
 
 
 @pytest.mark.parametrize(
-    "distribution, fields",
+    "definition",
     [
-        (ParameterDistribution.CATEGORICAL, {"low": 0.0, "high": 1.0}),
-        (ParameterDistribution.FLOAT, {"candidates": [0.0, 1.0]}),
-        (ParameterDistribution.INT, {"low": 1}),
+        {"distribution": "categorical", "low": 0.0, "high": 1.0},
+        {"distribution": "float", "candidates": [0.0, 1.0]},
+        {"distribution": "int", "low": 1},
+        {"distribution": "unknown"},
     ],
 )
-def test_distribution_rejects_fields_of_another_kind(
-    distribution: ParameterDistribution,
-    fields: dict[str, object],
-) -> None:
+def test_registry_rejects_fields_of_another_kind(definition: dict[str, object]) -> None:
     with pytest.raises(ValueError):
-        distribution.build_spec(fields)
+        parameter_spec_registry.build(definition)
+
+
+@pytest.mark.parametrize(
+    "spec_class, fields",
+    [
+        (FloatSpec, {"low": 0.1, "high": 1.0, "is_log": True, "step": 0.1}),
+        (FloatSpec, {"low": 0.0, "high": 1.0, "step": 0.0}),
+        (FloatSpec, {"low": 0.0, "high": 1.0, "step": float("inf")}),
+        (IntSpec, {"low": 1, "high": 4, "is_log": True, "step": 2}),
+        (IntSpec, {"low": 1, "high": 4, "step": 0}),
+    ],
+)
+def test_rejects_invalid_step(spec_class: type[ParameterSpec], fields: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        spec_class(**fields)
+
+
+def test_probe_stops_at_the_last_value_a_step_reaches() -> None:
+    assert IntSpec(low=0, high=7, step=3).probe_values == [0, 6]

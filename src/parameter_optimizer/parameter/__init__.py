@@ -1,5 +1,4 @@
-from .distribution import ParameterDistribution
-from .spec import ParameterSpec
+from .spec import ParameterSpec, parameter_spec_registry
 from .specs import CategoricalSpec, FloatSpec, IntSpec
 from .value import ParameterValue
 
@@ -7,7 +6,7 @@ __all__ = [
     "CategoricalSpec",
     "FloatSpec",
     "IntSpec",
-    "ParameterDistribution",
     "ParameterSpec",
     "ParameterValue",
+    "parameter_spec_registry",
 ]

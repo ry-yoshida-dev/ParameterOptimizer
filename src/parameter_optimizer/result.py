@@ -1,9 +1,8 @@
 from dataclasses import dataclass
 
-from omegaconf import DictConfig
 from optuna import Study
 
-from .parameter import ParameterValue
+from .trial_outcome import TrialOutcome
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13,20 +12,30 @@ class OptimizationResult[ConfigT]:
 
     Attributes
     ----------
-    best_config : ConfigT
-        Dataclass built from the best parameters.
-    resolved_config : DictConfig
-        Base configuration with the best parameters written in; usable as a normal configuration.
-    best_value : float
-        Objective value of the best trial.
-    best_parameters : dict[str, ParameterValue]
-        Best values keyed by parameter path.
+    best_trials : list[TrialOutcome[ConfigT]]
+        The best trial, or the Pareto front with several objectives.
     study : Study
         Underlying study, for analysis and visualization.
     """
 
-    best_config: ConfigT
-    resolved_config: DictConfig
-    best_value: float
-    best_parameters: dict[str, ParameterValue]
+    best_trials: list[TrialOutcome[ConfigT]]
     study: Study
+
+    @property
+    def best(self) -> TrialOutcome[ConfigT]:
+        """
+        The only best trial, which a single-objective optimization always has.
+
+        Returns
+        -------
+        TrialOutcome[ConfigT]
+            Best trial.
+
+        Raises
+        ------
+        ValueError
+            If the Pareto front holds several trials; choose among ``best_trials``.
+        """
+        if len(self.best_trials) != 1:
+            raise ValueError(f"The Pareto front holds {len(self.best_trials)} trials; choose among best_trials.")
+        return self.best_trials[0]
