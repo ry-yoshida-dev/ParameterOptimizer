@@ -53,6 +53,7 @@ def test_float_rejects_invalid_range(low: float, high: float, is_log: bool, erro
     "low, high, is_log, error_type",
     [
         (2, 1, False, ValueError),
+        (1, 1, False, ValueError),
         (1.0, 2.0, False, TypeError),
         (False, True, False, TypeError),
         (0, 8, True, ValueError),

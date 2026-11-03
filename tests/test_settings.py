@@ -25,6 +25,10 @@ def test_builds_from_configuration() -> None:
     [
         {"n_trials": 0},
         {"timeout_seconds": 0.0},
+        {"timeout_seconds": float("nan")},
+        {"timeout_seconds": float("inf")},
+        {"n_trials": 1, "seed": -1},
+        {"n_trials": 1, "seed": 2**32},
         {"n_trials": 1, "storage_url": "sqlite:///study.db"},
     ],
 )

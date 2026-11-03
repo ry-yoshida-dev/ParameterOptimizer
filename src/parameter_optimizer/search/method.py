@@ -5,13 +5,13 @@ from optuna.samplers import (
     BaseSampler,
     CmaEsSampler,
     GPSampler,
-    GridSampler,
     NSGAIISampler,
     QMCSampler,
     RandomSampler,
     TPESampler,
 )
 
+from .resumable_grid_sampler import ResumableGridSampler
 from .space import SearchSpace
 
 _GRID_SHUFFLE_SEED: int = 0
@@ -106,7 +106,7 @@ class SearchMethod(Enum):
         match self:
             case SearchMethod.GRID:
                 # Stored trials refer to positions in the shuffled grid, so another seed would misread them on resume.
-                return GridSampler(search_space.categorical_candidates, seed=_GRID_SHUFFLE_SEED)
+                return ResumableGridSampler(search_space.categorical_candidates, seed=_GRID_SHUFFLE_SEED)
             case SearchMethod.RANDOM:
                 return RandomSampler(seed=seed)
             case SearchMethod.QUASI_MONTE_CARLO:

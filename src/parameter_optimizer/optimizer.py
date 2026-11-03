@@ -1,19 +1,20 @@
+import hashlib
 import warnings
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 import optuna
 from dataclass_initializer import DataclassInitializer
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from optuna import Study, Trial
 from optuna.distributions import BaseDistribution
-from optuna.samplers import BaseSampler, GridSampler
+from optuna.samplers import BaseSampler
 from optuna.study import StudyDirection
 from optuna.trial import TrialState
 
 from .objective import Objective, TrialReporter
 from .parameter import ParameterValue
 from .result import OptimizationResult
-from .search import PruningMethod, SearchSpace
+from .search import PruningMethod, ResumableGridSampler, SearchSpace
 from .settings import OptimizerSettings
 
 
@@ -21,8 +22,8 @@ class ParameterOptimizer[ConfigT]:
     """
     Tunes a dataclass by overlaying a search space on its base configuration.
 
-    Every candidate is checked at construction by building ``config_class``, so mistakes in the search space fail
-    before any trial runs.
+    Every candidate and bound is checked at construction by building ``config_class``, so mistakes in the search space
+    fail before any trial runs. A value passes if it builds next to any tried values of the other parameters.
 
     Parameters
     ----------
@@ -43,9 +44,12 @@ class ParameterOptimizer[ConfigT]:
     TypeError
         If a probed value has the wrong type for its field.
     ValueError
-        If the search space is invalid, a key is unknown to ``config_class``, a probed value is rejected by it, or the
-        search method does not support the parameters.
+        If the search space is invalid, a key is unknown to ``config_class``, a probed value is rejected by it next to
+        every tried combination, or the search method does not support the parameters.
     """
+
+    _BASE_CONFIG_DIGEST_ATTRIBUTE: str = "parameter_optimizer.base_config_digest"
+    _SEED_RANGE: int = 2**32
 
     def __init__(
         self,
@@ -60,8 +64,9 @@ class ParameterOptimizer[ConfigT]:
         self._search_space: SearchSpace = SearchSpace.from_config(search_space)
         self._settings: OptimizerSettings = settings
         self._settings.search_method.validate(self._search_space)
-        for probe in self._search_space.iter_probes():
-            self._build_config(probe)
+        if settings.is_probing_enabled:
+            for probe_group in self._search_space.iter_probe_groups():
+                self._require_buildable(probe_group)
 
     def optimize(
         self,
@@ -88,7 +93,7 @@ class ParameterOptimizer[ConfigT]:
         RuntimeError
             If no trial completed.
         ValueError
-            If a resumed study has another direction or another search space.
+            If a resumed study has another direction, search space or base configuration.
         """
         study: Study = optuna.create_study(
             storage=self._settings.storage_url,
@@ -100,9 +105,11 @@ class ParameterOptimizer[ConfigT]:
         self._validate_resumed_study(study)
         sampler: BaseSampler = self._settings.search_method.build_sampler(self._search_space, self._next_seed(study))
         study.sampler = sampler
-        # A finished grid would otherwise run one more trial, because Optuna only stops after sampling.
-        if isinstance(sampler, GridSampler) and sampler.is_exhausted(study):
-            return self._summarize(study)
+        if isinstance(sampler, ResumableGridSampler):
+            sampler.enqueue_failed_points(study)
+            # A finished grid would otherwise run one more trial, because Optuna only stops after sampling.
+            if sampler.is_finished(study):
+                return self._summarize(study)
 
         def evaluate(trial: Trial) -> float:
             config: ConfigT = self._build_config(self._search_space.suggest(trial))
@@ -132,12 +139,23 @@ class ParameterOptimizer[ConfigT]:
                     f"Study {study.study_name} has trials of another search space: {trial.distributions}. "
                     + f"Expected {expected_distributions}."
                 )
+        # Trials of another base configuration would be reported as scores of a configuration that never ran them.
+        digest: str = self._base_config_digest()
+        stored_digest: str | None = study.user_attrs.get(self._BASE_CONFIG_DIGEST_ATTRIBUTE)
+        if stored_digest != digest and (stored_digest is not None or study.get_trials(deepcopy=False)):
+            raise ValueError(f"Study {study.study_name} was started with another base configuration or search space.")
+        study.set_user_attr(self._BASE_CONFIG_DIGEST_ATTRIBUTE, digest)
+
+    def _base_config_digest(self) -> str:
+        # The tuned keys are overwritten by every trial, so their base values must not count as a change.
+        fixed_config: DictConfig = self._search_space.apply(self._base_config, self._search_space.first_values)
+        return hashlib.sha256(OmegaConf.to_yaml(fixed_config, sort_keys=True).encode()).hexdigest()
 
     def _next_seed(self, study: Study) -> int | None:
         # The same seed on a resumed study would repeat the values of the earlier run.
         if self._settings.seed is None:
             return None
-        return self._settings.seed + len(study.get_trials(deepcopy=False))
+        return (self._settings.seed + len(study.get_trials(deepcopy=False))) % self._SEED_RANGE
 
     def _warn_if_pruning_is_ineffective(self, reporter: TrialReporter) -> None:
         if self._settings.pruning_method is not PruningMethod.NONE and not reporter.is_reported:
@@ -147,6 +165,19 @@ class ParameterOptimizer[ConfigT]:
                 UserWarning,
                 stacklevel=2,
             )
+
+    def _require_buildable(self, probe_group: Iterable[Mapping[str, ParameterValue]]) -> None:
+        first_error: ValueError | None = None
+        for values in probe_group:
+            try:
+                self._build_config(values)
+                return
+            except ValueError as error:
+                first_error = first_error or error
+        raise ValueError(
+            f"Every tried combination was rejected: {first_error}. If only values inside the bounds can build, "
+            + "set is_probing_enabled to False."
+        ) from first_error
 
     def _build_config(self, values: Mapping[str, ParameterValue]) -> ConfigT:
         resolved_config: DictConfig = self._search_space.apply(self._base_config, values)

@@ -11,7 +11,8 @@ build as production. [Optuna](https://optuna.org) performs the search.
   `{distribution: ..., ...}` at each key to tune.
 - **Mistakes fail before the first trial**: every candidate and bound is built at construction, so unknown keys, wrong
   types (an `int` for a `float` field) and values rejected by `__post_init__` never cost a long run.
-- **The result is a normal configuration**: `resolved_config` has the best values written in and can be saved as YAML.
+- **The result is a normal configuration**: `resolved_config` has the best values written in and its interpolations
+  resolved, so it can be saved as YAML and used on its own.
 
 See the [package documentation](src/parameter_optimizer/README.md) for the components and the
 [example](examples/README.md) for a complete run.
@@ -98,12 +99,19 @@ call `reporter.report`, otherwise every trial runs to completion and a warning i
   field needs `1.0`, not `1`.
 - A mapping whose `distribution` key holds a string is always a search definition, so a nested dataclass with such a
   field cannot be tuned through its own fields.
-- The checks at construction vary one parameter at a time. A combination rejected only by a constraint across
+- The checks at construction try each candidate and bound next to the candidates and bounds of the other parameters,
+  and fail only if every tried combination raises `ValueError`. A combination rejected by a constraint across
   parameters stops the run when it is sampled, unless its exception is listed in `caught_exceptions`.
+- Set `is_probing_enabled` to `False` for a constraint that no candidate or bound satisfies, such as a divisibility that
+  only values inside the bounds meet. Other mistakes then surface at the first trial that samples them.
 - Any exception from the objective stops the run unless it is listed in `caught_exceptions`.
 - Parameters that are only valid together, such as a model family and its weights, belong in separate base
   configurations and studies.
-- A study resumed from `storage_url` must have the same direction and search space, including bounds and candidates,
-  otherwise the run fails before its first trial; use a new `study_name` when they change. The search method may change.
+- A study resumed from `storage_url` must have the same direction, search space (including bounds and candidates) and
+  base configuration (except the base values of the tuned keys), otherwise the run fails before its first trial; use a
+  new `study_name` when they change. The search method may change.
+- The base configuration is compared after resolving its interpolations, so a key that varies between runs, such as an
+  output directory or a value from `${now:}`, stops a resume.
+- A resumed grid search evaluates each failed point again, including those failed through `caught_exceptions`.
 - With a `seed`, a resumed run continues with new values: the seed is offset by the number of existing trials, so a
   run is reproducible as long as the study holds the same trials.
