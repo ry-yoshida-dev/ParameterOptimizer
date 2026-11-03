@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parameter-optimizer"
+version = "0.0.1"
+authors = [
+  { name = "Ryuto Yoshida" },
+]
+description = "Tune any dataclass built from a DictConfig by overlaying a search space on its base configuration."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+dependencies = [
+    "omegaconf>=2.3",
+    "optuna>=5.0",
+    "dataclass-initializer @ git+https://github.com/ry-yoshida-dev/DataclassInitializer.git@60ed88a29184474aed069ab9253070923b5dcff0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ry-yoshida-dev/ParameterOptimizer"
+"Bug Tracker" = "https://github.com/ry-yoshida-dev/ParameterOptimizer/issues"
+
+[project.optional-dependencies]
+cma-es = ["cmaes"]
+gaussian-process = ["scipy", "torch"]
+quasi-monte-carlo = ["scipy"]
+dev = ["pytest>=8.0", "mypy", "basedpyright", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+parameter_optimizer = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests", "examples"]
+mypy_path = ["src", "tests"]
+explicit_package_bases = true
+
+[tool.pyright]
+include = ["src", "tests", "examples"]
+extraPaths = ["src", "tests"]
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.uv]
+exclude-newer = "2026-10-20T00:00:00Z"

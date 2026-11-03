@@ -1,0 +1,4 @@
+model:
+  name: quadratic
+  center: 0.5
+  scale: 1.0

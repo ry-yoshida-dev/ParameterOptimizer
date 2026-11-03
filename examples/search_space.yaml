@@ -1,0 +1,8 @@
+model:
+  center:
+    distribution: float
+    low: -5.0
+    high: 5.0
+  scale:
+    distribution: categorical
+    candidates: [1.0, 2.0, 4.0]

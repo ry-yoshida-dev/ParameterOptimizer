@@ -1,0 +1,17 @@
+# tests
+
+## Overview
+
+Tests of the public behavior of `parameter_optimizer`, run with `pytest`, laid out like the package. The cases of search
+methods with optional dependencies are skipped when their extras are not installed.
+
+## Components
+
+| Component | Responsibility |
+| --------- | -------------- |
+| [test_optimizer.py](test_optimizer.py) | End-to-end optimization, early failures, pruning, resuming and every search method |
+| [test_example.py](test_example.py) | Running the example |
+| [parameter/](parameter/README.md) | Tests of parameter definitions |
+| [search/](search/README.md) | Tests of search spaces and search methods |
+| [study/](study/README.md) | Tests of the settings |
+| [sample/](sample/README.md) | Target dataclass used by the tests |
