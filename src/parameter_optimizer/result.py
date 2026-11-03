@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from omegaconf import DictConfig
 from optuna import Study
 
-from ..parameter import ParameterValue
+from .parameter import ParameterValue
 
 
 @dataclass(frozen=True, kw_only=True)

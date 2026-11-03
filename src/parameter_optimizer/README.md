@@ -11,10 +11,11 @@ public is imported from `parameter_optimizer` itself.
 | Component | Responsibility |
 | --------- | -------------- |
 | [optimizer.py](optimizer.py) | `ParameterOptimizer`: validates the inputs, runs the study and summarizes it |
+| [settings.py](settings.py) | `OptimizerSettings`: input of an optimization |
+| [result.py](result.py) | `OptimizationResult`: output of an optimization |
+| [objective/](objective/README.md) | The function being optimized |
 | [parameter/](parameter/README.md) | Definition of one parameter |
-| [search/](search/README.md) | What is explored and by which algorithm |
-| [trial/](trial/README.md) | Evaluation of one configuration and its early stopping |
-| [study/](study/README.md) | Settings and outcome of a whole run |
+| [search/](search/README.md) | What is explored and which methods explore it |
 
 ## Examples
 

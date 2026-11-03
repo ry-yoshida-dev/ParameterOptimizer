@@ -10,8 +10,8 @@ methods with optional dependencies are skipped when their extras are not install
 | Component | Responsibility |
 | --------- | -------------- |
 | [test_optimizer.py](test_optimizer.py) | End-to-end optimization, early failures, pruning, resuming and every search method |
+| [test_settings.py](test_settings.py) | Building and validating `OptimizerSettings` |
 | [test_example.py](test_example.py) | Running the example |
 | [parameter/](parameter/README.md) | Tests of parameter definitions |
 | [search/](search/README.md) | Tests of search spaces and search methods |
-| [study/](study/README.md) | Tests of the settings |
 | [sample/](sample/README.md) | Target dataclass used by the tests |

@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
-from ..search import SearchMethod
-from ..trial import PruningMethod
-from .direction import Direction
+from .objective import Direction
+from .search import PruningMethod, SearchMethod
 
 
 @dataclass(frozen=True, kw_only=True)
