@@ -63,4 +63,4 @@ target-version = "py312"
 select = ["E", "F", "I"]
 
 [tool.uv]
-exclude-newer = "2026-10-20T00:00:00Z"
+exclude-newer = "7 days"
