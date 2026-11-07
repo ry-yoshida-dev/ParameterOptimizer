@@ -19,21 +19,3 @@ public is imported from `parameter_optimizer` itself.
 | [objective/](objective/README.md) | The function being optimized |
 | [parameter/](parameter/README.md) | Definition of one parameter |
 | [search/](search/README.md) | What is explored and which methods explore it |
-
-## Examples
-
-`OptimizerSettings` can be read from configuration as well:
-
-```python
-settings = OptimizerSettings.from_config(OmegaConf.load("settings.yaml"))
-```
-
-```yaml
-directions: [maximize]
-search_method: gaussian_process
-pruning_method: {name: hyperband, reduction_factor: 4}
-n_trials: 100
-seed: 42
-study_name: resnet
-storage: sqlite:///study.db
-```
